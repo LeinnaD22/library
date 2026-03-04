@@ -17,6 +17,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 sqlite3* db = nullptr;
 sqlite3* db_test = nullptr;
+sqlite3* db_book = nullptr;
 
 // Helper function to execute SQL
 void ExecuteSQL(const char* sql) {
@@ -71,6 +72,9 @@ void RefreshListView(HWND hWndListView, sqlite3* db_local) {
             swprintf_s(wText, L"%hs", email);
             ListView_SetItemText(hWndListView, index, 3, wText);
 
+            swprintf_s(wText, L"%hs", book);
+            ListView_SetItemText(hWndListView, index, 4, wText);
+
             swprintf_s(wText, L"%hs", status);
             ListView_SetItemText(hWndListView, index, 6, wText);
 
@@ -121,12 +125,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     const char* setup_test =
         "CREATE TABLE IF NOT EXISTS students (StudentID INTEGER PRIMARY KEY, Name TEXT, Section TEXT, Email TEXT, Status TEXT);"
         "INSERT OR IGNORE INTO students VALUES (123456, 'Vince michael', 'BSIT-1A', '123456@gende.com', 'not returned');"
-        "INSERT OR IGNORE INTO students VALUES (789012, 'Maria Clara', 'BSCS-2B', '789012@gende.com', 'not returned');";
+        "INSERT OR IGNORE INTO students VALUES (789012, 'Maria Clara', 'BSCS-2B', '789012@gende.com', 'not returned');"
+        "INSERT OR IGNORE INTO students VALUES (32310232, 'Nate Pre', '12-Galileo', '32310232@gendejesus.edu.ph', 'not returned');"
+
+        "CREATE TABLE IF NOT EXISTS books (BookID INTEGER PRIMARY KEY, BookName TEXT);"
+        "INSERT OR IGNORE INTO books VALUES (123456, 'kwento ng isang bisaya');"
+        "INSERT OR IGNORE INTO books VALUES (789012, 'book number 2');";
 
     sqlite3_exec(db_test, setup_test, NULL, NULL, NULL);
     sqlite3_close(db_test); // Close it so it's ready to be ATTACHED later
 
-    
+
 
     // Open or create the local database file
     if (sqlite3_open("local_data.db", &db) != SQLITE_OK) {
@@ -289,27 +298,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 		// Insert sample data
         RefreshListView(libraryDataGrid, db);
-
-
-       /*
-        int index = ListView_InsertItem(libraryDataGrid, &lvi);
-        
-        ListView_SetItemText(libraryDataGrid, index, 0, (LPWSTR)L"1");
-        ListView_SetItemText(libraryDataGrid, index, 1, (LPWSTR)L"451859");
-        ListView_SetItemText(libraryDataGrid, index, 2, (LPWSTR)L"ron");
-        ListView_SetItemText(libraryDataGrid, index, 3, (LPWSTR)L"12 - Galileo");
-        ListView_SetItemText(libraryDataGrid, index, 4, (LPWSTR)L"kwento ng isang bisaya - shynn");
-        ListView_SetItemText(libraryDataGrid, index, 5, (LPWSTR)L"next friday");
-
-        ListView_InsertItem(libraryDataGrid, &lvi);
-
-        ListView_SetItemText(libraryDataGrid, index, 0, (LPWSTR)L"2");
-        ListView_SetItemText(libraryDataGrid, index, 1, (LPWSTR)L"451859");
-        ListView_SetItemText(libraryDataGrid, index, 2, (LPWSTR)L"ron");
-        ListView_SetItemText(libraryDataGrid, index, 3, (LPWSTR)L"12 - test");
-        ListView_SetItemText(libraryDataGrid, index, 4, (LPWSTR)L"kwento ng isang bisaya - shynn");
-        ListView_SetItemText(libraryDataGrid, index, 5, (LPWSTR)L"next friday");
-        */
     
         
    ShowWindow(hWnd, SW_SHOWMAXIMIZED);
@@ -464,7 +452,9 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
     case WM_INITDIALOG:
     {// Use this to set default values when the dialog first opens
         HWND hEdit = GetDlgItem(hDlg, IDC_MY_EDITBOX);
+        HWND hBook = GetDlgItem(hDlg, IDC_EDIT1);
         Edit_SetCueBannerText(hEdit, L"Enter ID...");
+        Edit_SetCueBannerText(hBook, L"Enter Book ID");
         return (INT_PTR)TRUE;
     }
     case WM_COMMAND:
@@ -472,28 +462,34 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
         switch (LOWORD(wParam)) {
         case IDOK: {
             // Get text from an input box before closing
-            wchar_t buffer[256];
-            GetDlgItemText(hDlg, IDC_MY_EDITBOX, buffer, 256);
+            wchar_t szStudent[256], szBook[256];
+            char studentID[20], bookID[20];
+
+            GetDlgItemText(hDlg, IDC_MY_EDITBOX, szStudent, 256);
+            GetDlgItemText(hDlg, IDC_EDIT1, szBook, 256);
 
             // 2. CHECK: Is the input empty?
-            if (wcslen(buffer) == 0) {
-                MessageBox(hDlg, L"Please enter a Student ID!", L"Incomplete Data", MB_ICONWARNING);
-                return TRUE; // Returning TRUE here prevents the dialog from closing
+            if (wcslen(szStudent) == 0 || wcslen(szBook) == 0) {
+                MessageBox(hDlg, L"Please enter both a Student ID and a Book ID!", L"Incomplete Data", MB_ICONWARNING);
+                return (INT_PTR)TRUE;
             }
 
-            char studentID[20];
-            sprintf_s(studentID, "%ls", buffer);
+            
+            sprintf_s(studentID, "%ls", szStudent);
+            sprintf_s(bookID, "%ls", szBook);
 
             // 3. Try to find and copy the data
             sqlite3_exec(db_test, "ATTACH DATABASE 'test_data.db' AS test_source;", NULL, NULL, NULL);
 
             char query[2048];
             sprintf_s(query,
-                "INSERT INTO librarylog (StudentID, StudentName, Year_Section, Email, Status) "
-                "SELECT StudentID, Name, Section, Email, Status FROM test_source.students "
-                "WHERE StudentID = '%s';", studentID);
+                "INSERT INTO librarylog (StudentID, StudentName, Year_Section, Email, Status, BookBorrowed) "
+                "SELECT s.StudentID, s.Name, s.Section, s.Email, s.Status, b.BookName "
+                "FROM students s, books b "
+                "WHERE s.StudentID = %s AND b.BookID = %s LIMIT 1;",
+                studentID, bookID);
 
-            int rc = sqlite3_exec(db_test, query, NULL, NULL, NULL);
+            int rc = sqlite3_exec(db, query, NULL, NULL, NULL);
             int rowsChanged = sqlite3_changes(db);
 
             sqlite3_exec(db, "DETACH DATABASE test_source;", NULL, NULL, NULL);
@@ -510,10 +506,11 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
             }
             else {
                 // FAIL: ID not in test DB
-                MessageBox(hDlg, L"Student ID not found in database. Please try again.", L"Error", MB_ICONERROR);
+                MessageBox(hDlg, L"Student ID or Book ID not found in database. Please try again.", L"Error", MB_ICONERROR);
 
                 // Clear the text box so they can try again
                 SetDlgItemText(hDlg, IDC_MY_EDITBOX, L"");
+                SetDlgItemTextW(hDlg, IDC_EDIT1, L"");
                 SetFocus(GetDlgItem(hDlg, IDC_MY_EDITBOX));
 
                 return TRUE; // Keep the dialog box OPEN
@@ -523,10 +520,9 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
             EndDialog(hDlg, 0);
             return (INT_PTR)TRUE;
         }
-                 break;
+        break;
     }
-        return (INT_PTR)FALSE;
+    return (INT_PTR)FALSE;
 
-    
+
 }
-
