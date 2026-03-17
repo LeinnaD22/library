@@ -21,6 +21,16 @@ sqlite3* db = nullptr;
 sqlite3* db_test = nullptr;
 sqlite3* db_book = nullptr;
 
+void RemoveAllSpacesW(wchar_t* s) {
+    if (!s) return;
+    wchar_t* d = s;
+    do {
+        while (iswspace(*s)) {
+            s++;
+        }
+    } while (*d++ = *s++);
+}
+
 // Helper function to execute SQL
 void ExecuteSQL(const char* sql) {
     char* errorMessage = nullptr;
@@ -102,12 +112,11 @@ void CheckAndSendWeeklyEmails() {
     tm ltm;
     localtime_s(&ltm, &now);
 
-    // 1. Is it Thursday? (4 = Thursday)
-    if (ltm.tm_wday == 4) {
+    if (ltm.tm_wday == 4) { // Thursday
         char todayDate[20];
         strftime(todayDate, sizeof(todayDate), "%Y-%m-%d", &ltm);
 
-        // 2. Check DB to see if we already sent it today
+        // 1. Check date
         sqlite3_stmt* stmt;
         const char* checkSql = "SELECT value FROM app_settings WHERE key = 'last_email_date';";
 
@@ -116,13 +125,26 @@ void CheckAndSendWeeklyEmails() {
                 const char* lastDate = (const char*)sqlite3_column_text(stmt, 0);
 
                 if (strcmp(lastDate, todayDate) != 0) {
-                    // 3. We haven't sent it today! Launch script
-                    ShellExecuteA(NULL, "open", "python.exe", "email_script.py", NULL, SW_HIDE);
 
-                    // 4. Update DB so we don't send it again until next week
-                    char updateSql[128];
-                    sprintf_s(updateSql, "UPDATE app_settings SET value = '%s' WHERE key = 'last_email_date';", todayDate);
-                    sqlite3_exec(db, updateSql, NULL, NULL, NULL);
+              
+                    sqlite3_stmt* dataStmt;
+                    const char* dataCheck = "SELECT COUNT(*) FROM librarylog WHERE Status = 'Not Returned';";
+                    int count = 0;
+                    if (sqlite3_prepare_v2(db, dataCheck, -1, &dataStmt, NULL) == SQLITE_OK) {
+                        if (sqlite3_step(dataStmt) == SQLITE_ROW) {
+                            count = sqlite3_column_int(dataStmt, 0);
+                        }
+                        sqlite3_finalize(dataStmt);
+                    }
+
+                    if (count > 0) { // Only send if someone hasn't returned a book
+                        ShellExecuteA(NULL, "open", "python.exe", "email_script.py", NULL, SW_HIDE);
+                        MessageBox(NULL, L"Weekly reminder sent!", L"Email System", MB_OK);
+
+                        char updateSql[128];
+                        sprintf_s(updateSql, "UPDATE app_settings SET value = '%s' WHERE key = 'last_email_date';", todayDate);
+                        sqlite3_exec(db, updateSql, NULL, NULL, NULL);
+                    }
                 }
             }
             sqlite3_finalize(stmt);
@@ -166,15 +188,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     // 2. SUCCESS PATH: Now run the setup because the DB is officially open
     const char* setup_test =
-        "CREATE TABLE IF NOT EXISTS students (StudentID INTEGER PRIMARY KEY, Name TEXT, Section TEXT, Email TEXT, Status TEXT);"
+        "CREATE TABLE IF NOT EXISTS students (StudentID INTEGER, Name TEXT, Section TEXT, Email TEXT, Status TEXT);"
         "INSERT OR IGNORE INTO students VALUES (123456, 'Vince Michael Dela Cruz', '12-Galileo', '123456@gende.com', 'Not Returned');"
         "INSERT OR IGNORE INTO students VALUES (32211305, 'Ron Devuaghn Lemence', '12-Galileo', '32211305@gendejesus.edu.ph', 'Not Returned');"
         "INSERT OR IGNORE INTO students VALUES (32310232, 'Nate Danniel Pre', '12-Galileo', '32310232@gendejesus.edu.ph', 'Not Returned');"
         "INSERT OR IGNORE INTO students VALUES (11111111, 'Nate Danniel Pre', '12-Galileo', 'ansesskahz@gmail.com', 'Not Returned');"
 
-        "CREATE TABLE IF NOT EXISTS books (BookID INTEGER PRIMARY KEY, BookName TEXT);"
-        "INSERT OR IGNORE INTO books VALUES (123456, 'kwento ng isang bisaya');"
-        "INSERT OR IGNORE INTO books VALUES (789012, 'book number 2');";
+        "CREATE TABLE IF NOT EXISTS books (BookID INTEGER, BookName TEXT);";
 
     sqlite3_exec(db_test, setup_test, NULL, NULL, NULL);
     sqlite3_close(db_test); // Close it so it's ready to be ATTACHED later
@@ -182,28 +202,36 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 
     // Open or create the local database file
-    if (sqlite3_open("local_data.db", &db) != SQLITE_OK) {
-        MessageBox(NULL, L"Failed to open database! main", L"Error", MB_OK);
-        return 0;
+    // 1. Open the DB
+    if (sqlite3_open("local_data.db", &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 5000); // Set timeout first
+
+        const char* schema =
+            "CREATE TABLE IF NOT EXISTS librarylog ("
+            "ID INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "StudentID INTEGER, "
+            "StudentName TEXT, "
+            "Year_Section TEXT,"
+            "Email TEXT,"
+            "BookBorrowed TEXT,"
+            "ReturnDate TEXT,"
+            "Status TEXT DEFAULT 'Not Returned'"
+            ");"
+
+            "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);"
+            "INSERT OR IGNORE INTO app_settings VALUES('last_email_date', '0');";
+        if (sqlite3_exec(db, schema, NULL, NULL, NULL) == SQLITE_OK) {
+
+            // 3. Optional: Verify a table actually exists before calling weekly check
+            sqlite3_stmt* check;
+            if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='librarylog';", -1, &check, NULL) == SQLITE_OK) {
+                if (sqlite3_step(check) == SQLITE_ROW) {
+                    CheckAndSendWeeklyEmails(); // Only run if tables are confirmed
+                }
+                sqlite3_finalize(check);
+            }
+        }
     }
-
-    const char* schema =
-        "CREATE TABLE IF NOT EXISTS librarylog ("
-        "ID INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "StudentID INTEGER DEFAULT 000000, "
-        "StudentName TEXT, "
-        "Year_Section TEXT,"
-        "Email TEXT,"
-        "BookBorrowed TEXT,"
-        "ReturnDate INTEGER,"
-        "Status TEXT DEFAULT 'Not Returned'"
-        ");"
-
-        "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);"
-        "INSERT OR IGNORE INTO app_settings VALUES('last_email_date', '0');";
-        sqlite3_exec(db, schema, NULL, NULL, NULL);
-
-        
     
 
     InitCommonControls();
@@ -358,7 +386,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_SIZE:
-        {
+    {
         int winWidth = LOWORD(lParam);
         int winHeight = HIWORD(lParam);
 
@@ -382,23 +410,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             ListView_SetColumnWidth(hGrid, 1, 100);
             ListView_SetColumnWidth(hGrid, 2, 400);
             ListView_SetColumnWidth(hGrid, 3, 150);
-			ListView_SetColumnWidth(hGrid, 4, 300);
+            ListView_SetColumnWidth(hGrid, 4, 300);
             ListView_SetColumnWidth(hGrid, 5, 300);
             ListView_SetColumnWidth(hGrid, 6, 200);
             ListView_SetColumnWidth(hGrid, 7, LVSCW_AUTOSIZE_USEHEADER);
         }
-        }
-        break;
+    }
+    break;
     case WM_INITDIALOG:
     {
-       /* // Add items to the dropdown
-        SendMessage(comboBox, CB_ADDSTRING, 0, (LPARAM)L"First Item");
-        SendMessage(comboBox, CB_ADDSTRING, 0, (LPARAM)L"Second Item");
+        /* // Add items to the dropdown
+         SendMessage(comboBox, CB_ADDSTRING, 0, (LPARAM)L"First Item");
+         SendMessage(comboBox, CB_ADDSTRING, 0, (LPARAM)L"Second Item");
 
-        // Optional: Set the default selection to the first item
-        SendMessage(comboBox, CB_SETCURSEL, 0, 0);
+         // Optional: Set the default selection to the first item
+         SendMessage(comboBox, CB_SETCURSEL, 0, 0);
 
-        return TRUE;*/
+         return TRUE;*/
     }
     case WM_COMMAND:
     {
@@ -432,10 +460,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 ListView_GetItemText(libraryDataGrid, selectedIndex, 0, szRowID, 256);
 
                 const char* newStatus = (wmId == 1001) ? "Returned" : "Not Returned";
+                const char* newDate = (wmId == 1001) ? "datetime('now', 'localtime')" : "NULL";
 
                 // 2. IMPORTANT: Change StudentID to ID in the WHERE clause
                 char sql[512];
-                sprintf_s(sql, "UPDATE librarylog SET Status = '%s' WHERE ID = %ls;", newStatus, szRowID);
+                sprintf_s(sql, "UPDATE librarylog SET Status = '%s', ReturnDate = %s WHERE ID = %ls;",
+                    newStatus, newDate, szRowID);
 
                 if (sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK) {
                     RefreshListView(libraryDataGrid, db, false);
@@ -486,46 +516,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     } // End of case WM_COMMAND
     break;
     case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            // TODO: Add any drawing code that uses hdc here...
-            EndPaint(hWnd, &ps);
-        }
-        break;
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        // TODO: Add any drawing code that uses hdc here...
+        EndPaint(hWnd, &ps);
+    }
+    break;
     case WM_CREATE:
-        {
-            HWND addButton = CreateWindowEx(0, L"BUTTON", L"Add",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                1700, 10, 150, 30,
-				hWnd, (HMENU)2, hInst, nullptr);
+    {
+        HWND addButton = CreateWindowEx(0, L"BUTTON", L"Add",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1700, 10, 150, 30,
+            hWnd, (HMENU)2, hInst, nullptr);
 
-            /*HWND deleteButton = CreateWindowEx(0, L"BUTTON", L"Delete",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                1700, 50, 150, 30,
-			hWnd, (HMENU)4, hInst, nullptr);*/
+        /*HWND deleteButton = CreateWindowEx(0, L"BUTTON", L"Delete",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1700, 50, 150, 30,
+        hWnd, (HMENU)4, hInst, nullptr);*/
 
-            // NEW: Test Email Button (ID: 5)
-            HWND emailButton = CreateWindowEx(0, L"BUTTON", L"Manual Send Email",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                1700, 50, 150, 30, // Positioned below the Add button
-                hWnd, (HMENU)5, hInst, nullptr);
-        }
+        // NEW: Test Email Button (ID: 5)
+        HWND emailButton = CreateWindowEx(0, L"BUTTON", L"Manual Send Email",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1700, 50, 150, 30, // Positioned below the Add button
+            hWnd, (HMENU)5, hInst, nullptr);
+    }
 
-		break;
+    break;
+    case WM_CLOSE:
+        CheckAndSendWeeklyEmails();
+        sqlite3_close(db);
+
+        sqlite3_close(db_test);
+        DestroyWindow(hWnd);
+        break;
+    
     case WM_DESTROY:
        sqlite3_close(db);
-     /* {// 1. Wipe the data from your local log
-        const char* cleanup = "DELETE FROM librarylog;";
-        sqlite3_exec(db, cleanup, NULL, NULL, NULL);
-
-        // 2. Optional: Reset the ID counter to 1
-        sqlite3_exec(db, "DELETE FROM sqlite_sequence WHERE name='librarylog';", NULL, NULL, NULL);
-
-        // 3. Close the database handle
-        sqlite3_close(db);
-    }*/
-    
+     
 		sqlite3_close(db_test);
         PostQuitMessage(0);
         break;
@@ -601,6 +629,9 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
             GetDlgItemText(hDlg, IDC_MY_EDITBOX, szStudent, 256);
             GetDlgItemText(hDlg, IDC_EDIT1, szBook, 256);
 
+            RemoveAllSpacesW(szStudent);
+            RemoveAllSpacesW(szBook);
+
             // 2. CHECK: Is the input empty?
             if (wcslen(szStudent) == 0 || wcslen(szBook) == 0) {
                 MessageBox(hDlg, L"Please enter both a Student ID and a Book ID!", L"Incomplete Data", MB_ICONWARNING);
@@ -618,8 +649,9 @@ INT_PTR CALLBACK MyDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
             sprintf_s(query,
                 "INSERT INTO librarylog (StudentID, StudentName, Year_Section, Email, Status, BookBorrowed) "
                 "SELECT s.StudentID, s.Name, s.Section, s.Email, s.Status, b.BookName "
-                "FROM students s, books b "
-                "WHERE s.StudentID = %s AND b.BookID = %s LIMIT 1;",
+                "FROM test_source.students s, test_source.books b "
+                "WHERE REPLACE(s.StudentID, ' ', '') = '%s' "
+                "AND REPLACE(b.BookID, ' ', '') = '%s' LIMIT 1;",
                 studentID, bookID);
 
             int rc = sqlite3_exec(db, query, NULL, NULL, NULL);
