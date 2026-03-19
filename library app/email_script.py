@@ -1,58 +1,55 @@
 ﻿import smtplib
 import sqlite3
+import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 def send_bulk_reminders():
-    # --- 1. SETTINGS ---
-    # For Gmail: "smtp.gmail.com" | For Outlook/Office365: "smtp.office365.com"
-    SMTP_SERVER = "smtp.gmail.com" 
-    SMTP_PORT = 587
+    # SETTINGS
     MY_EMAIL = "32211305@gendejesus.edu.ph"
-    MY_APP_PASSWORD = "kptr gvpd ejkx vutu" # Your 16-character App Password
+    MY_APP_PASSWORD = "kptr gvpd ejkx vutu"
+    
+    # Get the folder where THIS script is located
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(base_path, "local_data.db")
+
+    print(f"Connecting to database at: {db_path}")
 
     try:
-        # 2. Connect to Database
-        conn = sqlite3.connect("local_data.db")
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT Email, StudentName, BookBorrowed FROM librarylog WHERE Status = 'Not Returned'")
+        # Use LIKE to be safe with spaces/casing
+        cursor.execute("SELECT Email, StudentName, BookBorrowed FROM librarylog WHERE Status LIKE '%Not Returned%'")
         rows = cursor.fetchall()
 
         if not rows:
-            print("No overdue books found.")
-            conn.close()
+            print("Finished: No students found with 'Not Returned' status.")
             return
 
-        # 3. Start the Email Server Connection
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()  # Encrypts the connection
+        print(f"Found {len(rows)} emails to send. Connecting to Gmail...")
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
         server.login(MY_EMAIL, MY_APP_PASSWORD)
 
         for email, name, book in rows:
             if not email: continue
-
-            # Create the Email message
             msg = MIMEMultipart()
             msg['From'] = f"JHS Library <{MY_EMAIL}>"
             msg['To'] = email
             msg['Subject'] = "Weekly Library Reminder"
-
-            body = f"Hi {name},<br><br>Our records show you still have <strong>{book}</strong>. Please return it to the JHS Library as soon as possible."
+            body = f"Hi {name},<br><br>Please return <strong>{book}</strong> to the JHS Library."
             msg.attach(MIMEText(body, 'html'))
+            
+            server.send_message(msg)
+            print(f"✅ Successfully sent to: {email}")
 
-            try:
-                server.send_message(msg)
-                print(f"✅ Sent to {email}")
-            except Exception as e:
-                print(f"❌ Failed for {email}: {e}")
-
-        # 4. Cleanup
         server.quit()
         conn.close()
-        print("\nAll reminders processed.")
+        print("Done!")
 
     except Exception as e:
-        print(f"Connection error: {e}")
+        print(f"FATAL ERROR: {str(e)}")
 
 if __name__ == "__main__":
     send_bulk_reminders()
